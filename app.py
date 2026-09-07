@@ -1,6 +1,6 @@
 """
 🎙️ تطبيق تفريغ الصوت بالعامية المصرية
-مصمم للعمل على Streamlit Cloud
+باستخدام نموذج Wav2Vec2 العربي
 """
 
 import os
@@ -30,8 +30,11 @@ warnings.filterwarnings("ignore")
 # ============================================================
 import streamlit as st
 import numpy as np
+import librosa
+import soundfile as sf
 from pydub import AudioSegment
-from faster_whisper import WhisperModel
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import torch
 
 # ============================================================
 # 🎨 إعدادات الصفحة
@@ -42,7 +45,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS مخصص
+# CSS
 st.markdown("""
     <style>
     .main-title {
@@ -91,44 +94,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 🧠 تحميل النموذج (مع Cache)
+# 🧠 تحميل النموذج
 # ============================================================
 @st.cache_resource
 def load_model():
     """
-    تحميل نموذج Faster-Whisper المدرب على العامية المصرية
+    تحميل نموذج Wav2Vec2 العربي
     """
-    with st.spinner("🔄 جاري تحميل النموذج... قد يستغرق 1-2 دقيقة"):
+    with st.spinner("🔄 جاري تحميل نموذج التعرف على الصوت العربي... قد يستغرق 1-2 دقيقة"):
         try:
-            # استخدام النموذج الخفيف المدرب على المصرية
-            model = WhisperModel(
-                'Mano200600/faster-whisper-small-egyptian-ar',
-                device='cpu',
-                compute_type='int8'
+            processor = Wav2Vec2Processor.from_pretrained(
+                "facebook/wav2vec2-large-xlsr-53-arabic"
             )
-            st.success("✅ تم تحميل النموذج بنجاح!")
-            return model
+            model = Wav2Vec2ForCTC.from_pretrained(
+                "facebook/wav2vec2-large-xlsr-53-arabic"
+            )
+            return processor, model
         except Exception as e:
             st.error(f"❌ خطأ في تحميل النموذج: {str(e)}")
-            return None
+            return None, None
 
 # ============================================================
 # 🎯 وظائف معالجة الصوت
 # ============================================================
 def convert_to_wav(audio_bytes, target_sr=16000):
     """
-    تحويل الملف الصوتي إلى WAV بمعدل 16 كيلو هرتز
+    تحويل الملف الصوتي إلى WAV
     """
     try:
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
         
-        # ضبط الإعدادات
         if audio.frame_rate != target_sr:
             audio = audio.set_frame_rate(target_sr)
         if audio.channels > 1:
             audio = audio.set_channels(1)
         
-        # حفظ في ملف مؤقت
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
             audio.export(tmp_wav.name, format="wav")
             return tmp_wav.name
@@ -136,17 +136,26 @@ def convert_to_wav(audio_bytes, target_sr=16000):
         st.error(f"❌ خطأ في تحويل الصوت: {str(e)}")
         return None
 
-def transcribe_audio(model, audio_path):
+def transcribe_audio(processor, model, audio_path):
     """
-    تفريغ الملف الصوتي باستخدام Faster-Whisper
+    تفريغ الملف الصوتي باستخدام Wav2Vec2
     """
     try:
-        segments, info = model.transcribe(audio_path, language="ar")
+        # تحميل الصوت
+        audio, sr = librosa.load(audio_path, sr=16000)
         
-        # جمع النص من جميع الأجزاء
-        full_text = " ".join([segment.text for segment in segments])
-        return full_text
+        # معالجة الصوت
+        input_values = processor(audio, return_tensors="pt", sampling_rate=16000).input_values
         
+        # التفريغ
+        with torch.no_grad():
+            logits = model(input_values).logits
+        
+        # تحويل النتيجة لنص
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = processor.batch_decode(predicted_ids)[0]
+        
+        return transcription
     except Exception as e:
         st.error(f"❌ خطأ في التفريغ: {str(e)}")
         return None
@@ -155,7 +164,6 @@ def transcribe_audio(model, audio_path):
 # 📱 واجهة التطبيق
 # ============================================================
 
-# العنوان الرئيسي
 st.markdown('<h1 class="main-title">🎙️ تفريغ الصوت</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">مخصص للعامية المصرية | يعمل بالكامل في السحابة ☁️</p>', unsafe_allow_html=True)
 
@@ -172,8 +180,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # عرض معلومات الملف
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2 = st.columns([2, 1])
     with col1:
         st.audio(uploaded_file, format="audio/wav")
     with col2:
@@ -193,33 +200,27 @@ if uploaded_file is not None:
         start_button = st.button("🎙️ ابدأ التفريغ", use_container_width=True)
     
     if start_button:
-        # ============================================================
-        # 1. تحميل النموذج
-        # ============================================================
-        model = load_model()
-        if model is None:
+        # تحميل النموذج
+        processor, model = load_model()
+        if processor is None or model is None:
             st.stop()
         
-        # ============================================================
-        # 2. تحويل الملف
-        # ============================================================
+        # تحويل الملف
         with st.spinner("🔄 جاري تحضير الملف للتفريغ..."):
             audio_bytes = uploaded_file.read()
             wav_path = convert_to_wav(audio_bytes)
             if wav_path is None:
                 st.stop()
         
-        # ============================================================
-        # 3. التفريغ مع مؤشر التقدم
-        # ============================================================
+        # التفريغ
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         status_text.text("🤖 جاري تفريغ الصوت...")
-        progress_bar.progress(20)
+        progress_bar.progress(30)
         
         start_time = time.time()
-        text = transcribe_audio(model, wav_path)
+        text = transcribe_audio(processor, model, wav_path)
         end_time = time.time()
         
         # تنظيف الملف المؤقت
@@ -231,19 +232,14 @@ if uploaded_file is not None:
         progress_bar.progress(100)
         status_text.text("✅ اكتمل التفريغ!")
         
-        # ============================================================
-        # 4. عرض النتيجة
-        # ============================================================
+        # عرض النتيجة
         if text:
             st.success(f"✅ تم التفريغ بنجاح في {end_time - start_time:.2f} ثانية")
             
-            # عرض النص
             st.markdown("### 📝 النص المفهرس")
             st.markdown(f'<div class="result-box">{text}</div>', unsafe_allow_html=True)
             
-            # ============================================================
-            # 5. خيارات التحميل
-            # ============================================================
+            # خيارات التحميل
             st.markdown("### 📥 خيارات التحميل")
             
             col1, col2, col3, col4 = st.columns(4)
@@ -258,7 +254,6 @@ if uploaded_file is not None:
                 )
             
             with col2:
-                # تحميل كـ SRT
                 srt_content = f"""1
 00:00:00,000 --> 00:10:00,000
 {text}"""
@@ -276,30 +271,27 @@ if uploaded_file is not None:
                     st.success("✅ تم النسخ!")
             
             with col4:
-                # إحصائيات
                 words = len(text.split())
-                chars = len(text)
                 st.metric("📊 الكلمات", words)
         else:
-            st.error("❌ فشل التفريغ. حاول مرة أخرى أو جرب ملفاً آخر.")
+            st.error("❌ فشل التفريغ. حاول مرة أخرى.")
 
 # ============================================================
-# ℹ️ معلومات التطبيق (في الـ Sidebar)
+# ℹ️ معلومات التطبيق
 # ============================================================
 with st.sidebar:
     st.markdown("### ℹ️ عن التطبيق")
     st.markdown("""
     **🎯 المميزات:**
-    - ✅ دعم العامية المصرية
-    - ✅ نموذج خفيف وسريع
+    - ✅ دعم اللغة العربية
+    - ✅ نموذج خفيف Wav2Vec2
     - ✅ يعمل في السحابة مجاناً
     - ✅ دعم صيغ متعددة
-    - ✅ تحميل النص بأكثر من صيغة
     
     **📌 التقنيات المستخدمة:**
     - Streamlit Cloud
-    - Faster-Whisper
-    - نموذج `faster-whisper-small-egyptian-ar`
+    - Wav2Vec2 (Facebook)
+    - Hugging Face Transformers
     
     **⏱️ وقت المعالجة:**
     - تحميل النموذج: 1-2 دقيقة (أول مرة فقط)
@@ -307,15 +299,13 @@ with st.sidebar:
     """)
     
     st.markdown("---")
-    
     st.markdown("### 🔧 التثبيت المحلي")
     st.code("""
-    pip install streamlit faster-whisper pydub
+    pip install streamlit transformers torch librosa pydub
     streamlit run app.py
     """, language="bash")
     
     st.markdown("---")
-    
     st.markdown("### 📚 صيغ مدعومة")
     st.markdown("""
     ✅ WAV
@@ -326,9 +316,6 @@ with st.sidebar:
     ✅ AAC
     """)
 
-# ============================================================
-# 🏁 نهاية التطبيق
-# ============================================================
 st.markdown("---")
 st.markdown(
     """
