@@ -1,0 +1,276 @@
+"""
+🎙️ تطبيق تفريغ الصوت بالعامية المصرية
+مصمم للعمل على Streamlit Cloud
+"""
+
+import os
+import tempfile
+import time
+import warnings
+import locale
+
+# ============================================================
+# 🛠️ إصلاح الترميز
+# ============================================================
+def fix_encoding():
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['LANG'] = 'en_US.UTF-8'
+    os.environ['LC_ALL'] = 'en_US.UTF-8'
+    try:
+        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+    except:
+        pass
+
+fix_encoding()
+warnings.filterwarnings("ignore")
+
+# ============================================================
+# 📦 استيراد المكتبات
+# ============================================================
+import streamlit as st
+import numpy as np
+from pydub import AudioSegment
+from faster_whisper import WhisperModel
+import io
+
+# ============================================================
+# 🎨 إعدادات الصفحة
+# ============================================================
+st.set_page_config(
+    page_title="تفريغ الصوت - العامية المصرية",
+    page_icon="🎙️",
+    layout="wide"
+)
+
+# CSS مخصص
+st.markdown("""
+    <style>
+    .main-title {
+        font-size: 2.8rem;
+        color: #FF4B4B;
+        text-align: center;
+        margin-bottom: 0.3rem;
+    }
+    .sub-title {
+        text-align: center;
+        color: #666;
+        margin-bottom: 2rem;
+        font-size: 1.1rem;
+    }
+    .result-box {
+        background-color: #f0f2f6;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border-right: 5px solid #FF4B4B;
+        direction: rtl;
+        font-size: 1.2rem;
+        line-height: 2;
+        font-family: 'Segoe UI', 'Tahoma', sans-serif;
+    }
+    .stButton > button {
+        width: 100%;
+        background-color: #FF4B4B;
+        color: white;
+        font-size: 1.1rem;
+        font-weight: bold;
+        border-radius: 8px;
+    }
+    .stButton > button:hover {
+        background-color: #d93636;
+        color: white;
+    }
+    .info-box {
+        background-color: #d1ecf1;
+        padding: 1rem;
+        border-radius: 10px;
+        border-right: 5px solid #17a2b8;
+        direction: rtl;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# 🧠 تحميل النموذج (مع Cache لاستخدامه مرة واحدة فقط)
+# ============================================================
+@st.cache_resource
+def load_model():
+    """
+    تحميل نموذج Faster-Whisper المدرب على العامية المصرية
+    """
+    with st.spinner("🔄 جاري تحميل النموذج... قد يستغرق 1-2 دقيقة"):
+        try:
+            # استخدام النموذج الخفيف المدرب على المصرية
+            model = WhisperModel(
+                'Mano200600/faster-whisper-small-egyptian-ar',
+                device='cpu',
+                compute_type='int8'
+            )
+            st.success("✅ تم تحميل النموذج بنجاح!")
+            return model
+        except Exception as e:
+            st.error(f"❌ خطأ في تحميل النموذج: {str(e)}")
+            return None
+
+# ============================================================
+# 🎯 وظائف معالجة الصوت
+# ============================================================
+def convert_to_wav(audio_bytes, target_sr=16000):
+    """
+    تحويل الملف الصوتي إلى WAV بمعدل 16 كيلو هرتز
+    """
+    try:
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+        
+        # ضبط الإعدادات
+        if audio.frame_rate != target_sr:
+            audio = audio.set_frame_rate(target_sr)
+        if audio.channels > 1:
+            audio = audio.set_channels(1)
+        
+        # حفظ في ملف مؤقت
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+            audio.export(tmp_wav.name, format="wav")
+            return tmp_wav.name
+    except Exception as e:
+        st.error(f"❌ خطأ في تحويل الصوت: {str(e)}")
+        return None
+
+def transcribe_audio(model, audio_path):
+    """
+    تفريغ الملف الصوتي باستخدام Faster-Whisper
+    """
+    try:
+        segments, info = model.transcribe(audio_path, language="ar")
+        
+        # جمع النص من جميع الأجزاء
+        full_text = " ".join([segment.text for segment in segments])
+        return full_text
+        
+    except Exception as e:
+        st.error(f"❌ خطأ في التفريغ: {str(e)}")
+        return None
+
+# ============================================================
+# 📱 واجهة التطبيق
+# ============================================================
+
+st.markdown('<h1 class="main-title">🎙️ تفريغ الصوت</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">مخصص للعامية المصرية | يعمل بالكامل في السحابة ☁️</p>', unsafe_allow_html=True)
+
+# ============================================================
+# 📂 رفع الملفات
+# ============================================================
+uploaded_file = st.file_uploader(
+    "📤 اختر ملفاً صوتياً",
+    type=["wav", "mp3", "m4a", "flac", "ogg", "aac"],
+    help="الملفات المدعومة: WAV, MP3, M4A, FLAC, OGG, AAC"
+)
+
+if uploaded_file is not None:
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.audio(uploaded_file, format="audio/wav")
+    with col2:
+        st.info(f"📁 {uploaded_file.name}\nحجم الملف: {uploaded_file.size / 1024:.1f} كيلوبايت")
+
+# ============================================================
+# 🚀 زر التشغيل
+# ============================================================
+if uploaded_file is not None:
+    if st.button("🎙️ ابدأ التفريغ", use_container_width=True):
+        
+        # 1. تحميل النموذج
+        model = load_model()
+        if model is None:
+            st.stop()
+        
+        # 2. تحويل الملف
+        with st.spinner("🔄 جاري تحضير الملف للتفريغ..."):
+            audio_bytes = uploaded_file.read()
+            wav_path = convert_to_wav(audio_bytes)
+            if wav_path is None:
+                st.stop()
+        
+        # 3. التفريغ
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text("🤖 جاري تفريغ الصوت...")
+        progress_bar.progress(30)
+        
+        start_time = time.time()
+        text = transcribe_audio(model, wav_path)
+        end_time = time.time()
+        
+        # تنظيف الملف المؤقت
+        try:
+            os.unlink(wav_path)
+        except:
+            pass
+        
+        progress_bar.progress(100)
+        status_text.text("✅ اكتمل التفريغ!")
+        
+        if text:
+            st.success(f"✅ تم التفريغ بنجاح في {end_time - start_time:.2f} ثانية")
+            
+            # عرض النص
+            st.markdown("### 📝 النص المفهرس")
+            st.markdown(f'<div class="result-box">{text}</div>', unsafe_allow_html=True)
+            
+            # خيارات التحميل
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.download_button(
+                    label="📄 تحميل كـ TXT",
+                    data=text.encode('utf-8'),
+                    file_name=f"transcript_{int(time.time())}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            with col2:
+                if st.button("📋 نسخ النص", use_container_width=True):
+                    st.code(text, language="text")
+                    st.success("✅ تم النسخ!")
+            with col3:
+                st.metric("عدد الكلمات", len(text.split()))
+        else:
+            st.error("❌ فشل التفريغ. حاول مرة أخرى.")
+
+# ============================================================
+# ℹ️ معلومات إضافية
+# ============================================================
+with st.sidebar:
+    st.markdown("### ℹ️ عن التطبيق")
+    st.markdown("""
+    **🎯 المميزات:**
+    - ✅ دعم العامية المصرية
+    - ✅ نموذج خفيف وسريع
+    - ✅ يعمل في السحابة مجاناً
+    - ✅ دعم صيغ متعددة
+    
+    **📌 التقنيات المستخدمة:**
+    - Streamlit Cloud
+    - Faster-Whisper
+    - نموذج `faster-whisper-small-egyptian-ar` [citation:1]
+    
+    **⏱️ وقت التحميل:**
+    أول مرة يحتاج 1-2 دقيقة، بعد كده بيبقى أسرع
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 🔧 التثبيت المحلي")
+    st.code("""
+    pip install streamlit faster-whisper pydub
+    streamlit run app.py
+    """, language="bash")
+
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #888; font-size: 0.9rem;'>
+    🎙️ تطبيق تفريغ الصوت بالعامية المصرية | يعمل بالكامل على السحابة ☁️
+    </div>
+    """,
+    unsafe_allow_html=True
+)
